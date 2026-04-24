@@ -76,7 +76,7 @@ type Log struct {
 	Type LogType
 
 	// Data holds the log entry's type-specific data.
-	Data []byte
+	Data []byte `cborgen:"maxlen=536870912"`
 
 	// Extensions holds an opaque byte slice of information for middleware. It
 	// is up to the client of the library to properly modify this as it adds
@@ -104,7 +104,7 @@ type Log struct {
 	// In general too the leader is not required to persist the log before
 	// delivering to followers although the current implementation happens to do
 	// this.
-	AppendedAt time.Time
+	AppendedAt time.Time `cborgen:"binarymarshaler"`
 }
 
 // LogStore is used to provide an interface for storing
