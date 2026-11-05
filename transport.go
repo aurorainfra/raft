@@ -11,19 +11,25 @@ import (
 // RPCResponse captures both a response and a potential error.
 type RPCResponse struct {
 	Response interface{}
+	Reader   io.Reader
 	Error    error
 }
 
 // RPC has a command, and provides a response mechanism.
 type RPC struct {
 	Command  interface{}
-	Reader   io.Reader // Set only for InstallSnapshot
+	Reader   io.Reader
 	RespChan chan<- RPCResponse
 }
 
 // Respond is used to respond with a response, error or both
 func (r *RPC) Respond(resp interface{}, err error) {
-	r.RespChan <- RPCResponse{resp, err}
+	r.RespChan <- RPCResponse{resp, nil, err}
+}
+
+// RespondWithReader is used to respond with a response, body or both
+func (r *RPC) RespondWithReader(resp interface{}, body io.Reader) {
+	r.RespChan <- RPCResponse{resp, body, nil}
 }
 
 // Transport provides an interface for network transports
@@ -64,6 +70,46 @@ type Transport interface {
 
 	// TimeoutNow is used to start a leadership transfer to the target node.
 	TimeoutNow(id ServerID, target ServerAddress, args *TimeoutNowRequest, resp *TimeoutNowResponse) error
+}
+
+// TransportCustom is implemented by transports that carry the custom
+// (non-Raft) RPCs. Connections are pooled and reused between calls, so the
+// stream must stay aligned: consumers MUST honor the contracts below.
+// Violating them leaves stray bytes on the connection that the next RPC
+// will misread.
+type TransportCustom interface {
+	// ConsumerCustom returns a channel delivering SendBuffer, RecBuffer and
+	// TransferLeadership RPCs. Every RPC must be answered via RPC.Respond.
+	ConsumerCustom() <-chan RPC
+
+	// SendBuffer sends args followed by exactly args.Size bytes read from
+	// data, then waits for the response.
+	//
+	// Caller: data must yield at least args.Size bytes; only args.Size are
+	// sent, and fewer fails the call and drops the connection.
+	// Consumer: read exactly args.Size bytes from RPC.Reader before calling
+	// RPC.Respond, including when responding with an error. Read with
+	// io.CopyN(dst, RPC.Reader, req.Size) or io.ReadFull, not io.ReadAll or
+	// io.Copy: if the caller drops the connection mid-body, RPC.Reader ends
+	// with a plain io.EOF, which only a length-checked read reports as an
+	// error.
+	SendBuffer(id ServerID, target ServerAddress, args *SendBufferRequest, resp *SendBufferResponse, data io.Reader) error
+
+	// RecBuffer sends args and decodes the response. When the call succeeds
+	// and resp.Size >= 0, a body of exactly resp.Size bytes follows and is
+	// copied into data. resp.Size == -1 means the piece was not found; no
+	// body follows and data is untouched.
+	//
+	// Consumer: when the piece is found, answer with RPC.RespondWithReader
+	// and RecBufferResponse{Size: n}, using a reader that yields at least n
+	// bytes (only n are sent; fewer drops the connection). When it is not
+	// found, answer with RPC.Respond and Size -1; on error, RPC.Respond with
+	// the error and no reader.
+	// Caller: on error, discard whatever was written to data.
+	RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data io.Writer) error
+
+	// TransferLeadership is a plain request/response RPC with no body.
+	TransferLeadership(id ServerID, target ServerAddress, args *TransferLeadershipRequest, resp *TransferLeadershipResponse) error
 }
 
 // WithPreVote is an interface that a transport may provide which
