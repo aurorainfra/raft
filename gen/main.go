@@ -20,6 +20,12 @@ func main() {
 		raft.RPCHeader{},
 		raft.Log{},
 		raft.String{},
+		raft.SendBufferRequest{},
+		raft.SendBufferResponse{},
+		raft.RecBufferRequest{},
+		raft.RecBufferResponse{},
+		raft.TransferLeadershipRequest{},
+		raft.TransferLeadershipResponse{},
 	)
 	if err != nil {
 		panic(err)

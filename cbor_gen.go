@@ -1947,3 +1947,655 @@ func (t *String) UnmarshalCBOR(r io.Reader) (err error) {
 	}
 	return nil
 }
+
+var lengthBufSendBufferRequest = []byte{132}
+
+func (t *SendBufferRequest) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufSendBufferRequest); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Id (uint64) (uint64)
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Id)); err != nil {
+		return err
+	}
+
+	// t.Shard (int16) (int16)
+
+	if t.Shard >= 0 {
+		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Shard)); err != nil {
+			return err
+		}
+	} else {
+		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Shard-1)); err != nil {
+			return err
+		}
+	}
+
+	// t.Size (int64) (int64)
+
+	if t.Size >= 0 {
+		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Size)); err != nil {
+			return err
+		}
+	} else {
+		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Size-1)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *SendBufferRequest) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = SendBufferRequest{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 4 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Id (uint64) (uint64)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		if maj != cbg.MajUnsignedInt {
+			return fmt.Errorf("wrong type for uint64 field")
+		}
+		if extra > 18446744073709551615 {
+			return fmt.Errorf("t.Id: value %d too large for uint64", extra)
+		}
+
+		t.Id = uint64(extra)
+
+	}
+	// t.Shard (int16) (int16)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		var extraI int64
+		switch maj {
+		case cbg.MajUnsignedInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too large for int16", extra)
+			}
+			extraI = int64(extra)
+		case cbg.MajNegativeInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too negative for int16", extra)
+			}
+			extraI = -1 - int64(extra)
+		default:
+			return fmt.Errorf("wrong type for int16 field: %d", maj)
+		}
+
+		t.Shard = int16(extraI)
+
+	}
+	// t.Size (int64) (int64)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		var extraI int64
+		switch maj {
+		case cbg.MajUnsignedInt:
+			if extra > 9223372036854775807 {
+				return fmt.Errorf("t.Size: value %d too large for int64", extra)
+			}
+			extraI = int64(extra)
+		case cbg.MajNegativeInt:
+			if extra > 9223372036854775807 {
+				return fmt.Errorf("t.Size: value %d too negative for int64", extra)
+			}
+			extraI = -1 - int64(extra)
+		default:
+			return fmt.Errorf("wrong type for int64 field: %d", maj)
+		}
+
+		t.Size = int64(extraI)
+
+	}
+	return nil
+}
+
+var lengthBufSendBufferResponse = []byte{130}
+
+func (t *SendBufferResponse) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufSendBufferResponse); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Ok (bool) (bool)
+	if err := cbg.WriteBool(w, t.Ok); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *SendBufferResponse) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = SendBufferResponse{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 2 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Ok (bool) (bool)
+
+	maj, extra, err = cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if maj != cbg.MajOther {
+		return fmt.Errorf("booleans must be major type 7")
+	}
+	switch extra {
+	case 20:
+		t.Ok = false
+	case 21:
+		t.Ok = true
+	default:
+		return fmt.Errorf("booleans are either major type 7, value 20 or 21 (got %d)", extra)
+	}
+	return nil
+}
+
+var lengthBufRecBufferRequest = []byte{132}
+
+func (t *RecBufferRequest) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufRecBufferRequest); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Id (uint64) (uint64)
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Id)); err != nil {
+		return err
+	}
+
+	// t.Shard (int16) (int16)
+
+	if t.Shard >= 0 {
+		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Shard)); err != nil {
+			return err
+		}
+	} else {
+		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Shard-1)); err != nil {
+			return err
+		}
+	}
+
+	// t.Size (int64) (int64)
+
+	if t.Size >= 0 {
+		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Size)); err != nil {
+			return err
+		}
+	} else {
+		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Size-1)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *RecBufferRequest) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = RecBufferRequest{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 4 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Id (uint64) (uint64)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		if maj != cbg.MajUnsignedInt {
+			return fmt.Errorf("wrong type for uint64 field")
+		}
+		if extra > 18446744073709551615 {
+			return fmt.Errorf("t.Id: value %d too large for uint64", extra)
+		}
+
+		t.Id = uint64(extra)
+
+	}
+	// t.Shard (int16) (int16)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		var extraI int64
+		switch maj {
+		case cbg.MajUnsignedInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too large for int16", extra)
+			}
+			extraI = int64(extra)
+		case cbg.MajNegativeInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too negative for int16", extra)
+			}
+			extraI = -1 - int64(extra)
+		default:
+			return fmt.Errorf("wrong type for int16 field: %d", maj)
+		}
+
+		t.Shard = int16(extraI)
+
+	}
+	// t.Size (int64) (int64)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		var extraI int64
+		switch maj {
+		case cbg.MajUnsignedInt:
+			if extra > 9223372036854775807 {
+				return fmt.Errorf("t.Size: value %d too large for int64", extra)
+			}
+			extraI = int64(extra)
+		case cbg.MajNegativeInt:
+			if extra > 9223372036854775807 {
+				return fmt.Errorf("t.Size: value %d too negative for int64", extra)
+			}
+			extraI = -1 - int64(extra)
+		default:
+			return fmt.Errorf("wrong type for int64 field: %d", maj)
+		}
+
+		t.Size = int64(extraI)
+
+	}
+	return nil
+}
+
+var lengthBufRecBufferResponse = []byte{130}
+
+func (t *RecBufferResponse) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufRecBufferResponse); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Found (bool) (bool)
+	if err := cbg.WriteBool(w, t.Found); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *RecBufferResponse) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = RecBufferResponse{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 2 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Found (bool) (bool)
+
+	maj, extra, err = cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if maj != cbg.MajOther {
+		return fmt.Errorf("booleans must be major type 7")
+	}
+	switch extra {
+	case 20:
+		t.Found = false
+	case 21:
+		t.Found = true
+	default:
+		return fmt.Errorf("booleans are either major type 7, value 20 or 21 (got %d)", extra)
+	}
+	return nil
+}
+
+var lengthBufTransferLeadershipRequest = []byte{131}
+
+func (t *TransferLeadershipRequest) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufTransferLeadershipRequest); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Id (raft.ServerID) (string)
+	if len(t.Id) > 8192 {
+		return xerrors.Errorf("Value in field t.Id was too long")
+	}
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.Id))); err != nil {
+		return err
+	}
+	if _, err := cw.WriteString(string(t.Id)); err != nil {
+		return err
+	}
+
+	// t.Address (raft.ServerAddress) (string)
+	if len(t.Address) > 8192 {
+		return xerrors.Errorf("Value in field t.Address was too long")
+	}
+
+	if err := cw.WriteMajorTypeHeader(cbg.MajTextString, uint64(len(t.Address))); err != nil {
+		return err
+	}
+	if _, err := cw.WriteString(string(t.Address)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *TransferLeadershipRequest) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = TransferLeadershipRequest{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 3 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Id (raft.ServerID) (string)
+
+	{
+		sval, err := cbg.ReadStringWithMax(cr, 8192)
+		if err != nil {
+			return err
+		}
+
+		t.Id = ServerID(sval)
+	}
+	// t.Address (raft.ServerAddress) (string)
+
+	{
+		sval, err := cbg.ReadStringWithMax(cr, 8192)
+		if err != nil {
+			return err
+		}
+
+		t.Address = ServerAddress(sval)
+	}
+	return nil
+}
+
+var lengthBufTransferLeadershipResponse = []byte{130}
+
+func (t *TransferLeadershipResponse) MarshalCBOR(w io.Writer) error {
+	if t == nil {
+		_, err := w.Write(cbg.CborNull)
+		return err
+	}
+
+	cw := cbg.NewCborWriter(w)
+
+	if _, err := cw.Write(lengthBufTransferLeadershipResponse); err != nil {
+		return err
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
+		return err
+	}
+
+	// t.Ok (bool) (bool)
+	if err := cbg.WriteBool(w, t.Ok); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *TransferLeadershipResponse) UnmarshalCBOR(r io.Reader) (err error) {
+	*t = TransferLeadershipResponse{}
+
+	cr := cbg.NewCborReader(r)
+
+	maj, extra, err := cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+	}()
+
+	if maj != cbg.MajArray {
+		return fmt.Errorf("cbor input should be of type array")
+	}
+
+	if extra != 2 {
+		return fmt.Errorf("cbor input had wrong number of fields")
+	}
+
+	// t.RPCHeader (raft.RPCHeader) (struct)
+
+	{
+
+		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
+			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
+		}
+
+	}
+	// t.Ok (bool) (bool)
+
+	maj, extra, err = cr.ReadHeader()
+	if err != nil {
+		return err
+	}
+	if maj != cbg.MajOther {
+		return fmt.Errorf("booleans must be major type 7")
+	}
+	switch extra {
+	case 20:
+		t.Ok = false
+	case 21:
+		t.Ok = true
+	default:
+		return fmt.Errorf("booleans are either major type 7, value 20 or 21 (got %d)", extra)
+	}
+	return nil
+}

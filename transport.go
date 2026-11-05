@@ -17,7 +17,8 @@ type RPCResponse struct {
 // RPC has a command, and provides a response mechanism.
 type RPC struct {
 	Command  interface{}
-	Reader   io.Reader // Set only for InstallSnapshot
+	Reader   io.Reader
+	Writer   io.Writer
 	RespChan chan<- RPCResponse
 }
 
@@ -64,6 +65,39 @@ type Transport interface {
 
 	// TimeoutNow is used to start a leadership transfer to the target node.
 	TimeoutNow(id ServerID, target ServerAddress, args *TimeoutNowRequest, resp *TimeoutNowResponse) error
+}
+
+// TransportCustom is implemented by transports that carry the custom
+// (non-Raft) RPCs. Connections are pooled and reused between calls, so the
+// stream must stay aligned: consumers MUST honor the contracts below.
+// Violating them leaves stray bytes on the connection that the next RPC
+// will misread.
+type TransportCustom interface {
+	// ConsumerCustom returns a channel delivering SendBuffer, RecBuffer and
+	// TransferLeadership RPCs. Every RPC must be answered via RPC.Respond.
+	ConsumerCustom() <-chan RPC
+
+	// SendBuffer sends args followed by exactly args.Size bytes read from
+	// data, then waits for the response.
+	//
+	// Caller: data must yield exactly args.Size bytes.
+	// Consumer: read exactly args.Size bytes from RPC.Reader before calling
+	// RPC.Respond, including when responding with an error.
+	SendBuffer(id ServerID, target ServerAddress, args *SendBufferRequest, resp *SendBufferResponse, data io.Reader) error
+
+	// RecBuffer sends args, copies exactly args.Size bytes from the
+	// connection into data, then decodes the response.
+	//
+	// Consumer: write exactly args.Size bytes to RPC.Writer and finish
+	// writing before calling RPC.Respond. This applies in every case,
+	// including a missing buffer (Found=false) or an error: pad with
+	// filler bytes. The body always precedes the response, so the caller
+	// receives the bytes before it can inspect Found.
+	// Caller: on error, discard whatever was written to data.
+	RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data io.Writer) error
+
+	// TransferLeadership is a plain request/response RPC with no body.
+	TransferLeadership(id ServerID, target ServerAddress, args *TransferLeadershipRequest, resp *TransferLeadershipResponse) error
 }
 
 // WithPreVote is an interface that a transport may provide which
