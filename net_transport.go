@@ -591,7 +591,7 @@ func (n *NetworkTransport) SendBuffer(id ServerID, target ServerAddress, args *S
 	return err
 }
 
-func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data io.Writer) error {
+func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data func(io.Reader) error) error {
 	// Get a conn
 	conn, err := n.getConnFromAddressProvider(id, target)
 	if err != nil {
@@ -623,7 +623,7 @@ func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *Re
 		_ = conn.conn.SetDeadline(time.Now().Add(timeout))
 	}
 
-	if _, err := io.CopyN(data, conn.r, resp.Size); err != nil {
+	if err := data(io.LimitReader(conn.r, resp.Size)); err != nil {
 		_ = conn.Release()
 		return err
 	}

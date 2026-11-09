@@ -196,6 +196,14 @@ func TestNetworkTransportCustom_SendBuffer_ErrorResponse(t *testing.T) {
 	requireSinglePooledConn(t, client, server)
 }
 
+// copyTo returns a RecBuffer body callback that copies the body into w.
+func copyTo(w io.Writer) func(io.Reader) error {
+	return func(r io.Reader) error {
+		_, err := io.Copy(w, r)
+		return err
+	}
+}
+
 // recBufferStore answers RecBuffer from store, reporting the piece's shard as
 // its id plus 10; a missing piece is reported as Size -1 with no body.
 func recBufferStore(store map[PieceId][]byte) func(rpc RPC) {
@@ -223,7 +231,7 @@ func TestNetworkTransportCustom_RecBuffer(t *testing.T) {
 		args := RecBufferRequest{Id: id}
 		var out RecBufferResponse
 		var got bytes.Buffer
-		require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &args, &out, &got))
+		require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &args, &out, copyTo(&got)))
 		require.Equal(t, int16(id)+10, out.Shard)
 		require.Equal(t, int64(len(store[id])), out.Size)
 		require.Equal(t, store[id], got.Bytes())
@@ -233,7 +241,7 @@ func TestNetworkTransportCustom_RecBuffer(t *testing.T) {
 	args := RecBufferRequest{Id: 99}
 	var out RecBufferResponse
 	var got bytes.Buffer
-	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &args, &out, &got))
+	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &args, &out, copyTo(&got)))
 	require.Equal(t, int64(-1), out.Size)
 	require.Zero(t, got.Len())
 
@@ -250,7 +258,7 @@ func TestNetworkTransportCustom_RecBuffer_LongReader(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		var out RecBufferResponse
 		var got bytes.Buffer
-		require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, &got))
+		require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(&got)))
 		require.Equal(t, data[:40], got.Bytes())
 	}
 	requireSinglePooledConn(t, client, server)
@@ -269,12 +277,12 @@ func TestNetworkTransportCustom_RecBuffer_ShortReader(t *testing.T) {
 	})
 
 	var out RecBufferResponse
-	err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, io.Discard)
+	err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(io.Discard))
 	require.Error(t, err)
 	require.Equal(t, 0, pooledConns(client, server))
 
 	var got bytes.Buffer
-	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, &got))
+	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(&got)))
 	require.Equal(t, payload(100, 0), got.Bytes())
 	requireSinglePooledConn(t, client, server)
 }
@@ -319,7 +327,44 @@ func TestNetworkTransportCustom_RecBuffer_ScaledDeadline(t *testing.T) {
 
 	var out RecBufferResponse
 	var got bytes.Buffer
-	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, &got))
+	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(&got)))
+	require.Equal(t, data, got.Bytes())
+}
+
+// The server drops the connection after flushing part of a large body. The
+// callback sees a plain EOF from the size-limited reader, so the call must
+// still fail rather than report a truncated body as success.
+func TestNetworkTransportCustom_RecBuffer_TruncatedBody(t *testing.T) {
+	server, client := newCustomPair(t, func(rpc RPC) {
+		// 32KB exceeds the server's 4KB write buffer, so it reaches the wire.
+		rpc.RespondWithReader(&RecBufferResponse{Size: 64 << 10}, bytes.NewReader(payload(32<<10, 0)))
+	})
+
+	var out RecBufferResponse
+	var got bytes.Buffer
+	err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(&got))
+	require.Error(t, err, "truncated body accepted: got %d of %d bytes", got.Len(), out.Size)
+	require.Equal(t, 0, pooledConns(client, server))
+}
+
+// A callback that returns without reading the whole body must not leave the
+// rest on a pooled connection; the next call has to work.
+func TestNetworkTransportCustom_RecBuffer_CallbackUnderRead(t *testing.T) {
+	data := payload(100, 0)
+	server, client := newCustomPair(t, func(rpc RPC) {
+		rpc.RespondWithReader(&RecBufferResponse{Size: int64(len(data))}, bytes.NewReader(data))
+	})
+
+	var out RecBufferResponse
+	head := make([]byte, 10)
+	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, func(r io.Reader) error {
+		_, err := io.ReadFull(r, head)
+		return err
+	}))
+	require.Equal(t, data[:10], head)
+
+	var got bytes.Buffer
+	require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(&got)))
 	require.Equal(t, data, got.Bytes())
 }
 
@@ -330,7 +375,7 @@ func TestNetworkTransportCustom_RecBuffer_ErrorResponse(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		var out RecBufferResponse
-		err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, io.Discard)
+		err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{}, &out, copyTo(io.Discard))
 		require.EqualError(t, err, "shard offline")
 	}
 	requireSinglePooledConn(t, client, server)
@@ -361,7 +406,7 @@ func TestNetworkTransportCustom_Interleaved(t *testing.T) {
 
 		var rOut RecBufferResponse
 		var got bytes.Buffer
-		require.NoError(t, client.RecBuffer("id", addr, &RecBufferRequest{Id: 1}, &rOut, &got))
+		require.NoError(t, client.RecBuffer("id", addr, &RecBufferRequest{Id: 1}, &rOut, copyTo(&got)))
 		require.Equal(t, stored, got.Bytes())
 
 		var tOut TransferLeadershipResponse
