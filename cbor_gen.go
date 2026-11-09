@@ -2185,7 +2185,7 @@ func (t *SendBufferResponse) UnmarshalCBOR(r io.Reader) (err error) {
 	return nil
 }
 
-var lengthBufRecBufferRequest = []byte{131}
+var lengthBufRecBufferRequest = []byte{130}
 
 func (t *RecBufferRequest) MarshalCBOR(w io.Writer) error {
 	if t == nil {
@@ -2210,18 +2210,6 @@ func (t *RecBufferRequest) MarshalCBOR(w io.Writer) error {
 		return err
 	}
 
-	// t.Shard (int16) (int16)
-
-	if t.Shard >= 0 {
-		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Shard)); err != nil {
-			return err
-		}
-	} else {
-		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Shard-1)); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -2244,7 +2232,7 @@ func (t *RecBufferRequest) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("cbor input should be of type array")
 	}
 
-	if extra != 3 {
+	if extra != 2 {
 		return fmt.Errorf("cbor input had wrong number of fields")
 	}
 
@@ -2275,37 +2263,10 @@ func (t *RecBufferRequest) UnmarshalCBOR(r io.Reader) (err error) {
 		t.Id = PieceId(extra)
 
 	}
-	// t.Shard (int16) (int16)
-	{
-
-		maj, extra, err := cr.ReadHeader()
-		if err != nil {
-			return err
-		}
-
-		var extraI int64
-		switch maj {
-		case cbg.MajUnsignedInt:
-			if extra > 32767 {
-				return fmt.Errorf("t.Shard: value %d too large for int16", extra)
-			}
-			extraI = int64(extra)
-		case cbg.MajNegativeInt:
-			if extra > 32767 {
-				return fmt.Errorf("t.Shard: value %d too negative for int16", extra)
-			}
-			extraI = -1 - int64(extra)
-		default:
-			return fmt.Errorf("wrong type for int16 field: %d", maj)
-		}
-
-		t.Shard = int16(extraI)
-
-	}
 	return nil
 }
 
-var lengthBufRecBufferResponse = []byte{130}
+var lengthBufRecBufferResponse = []byte{131}
 
 func (t *RecBufferResponse) MarshalCBOR(w io.Writer) error {
 	if t == nil {
@@ -2322,6 +2283,18 @@ func (t *RecBufferResponse) MarshalCBOR(w io.Writer) error {
 	// t.RPCHeader (raft.RPCHeader) (struct)
 	if err := t.RPCHeader.MarshalCBOR(cw); err != nil {
 		return err
+	}
+
+	// t.Shard (int16) (int16)
+
+	if t.Shard >= 0 {
+		if err := cw.WriteMajorTypeHeader(cbg.MajUnsignedInt, uint64(t.Shard)); err != nil {
+			return err
+		}
+	} else {
+		if err := cw.WriteMajorTypeHeader(cbg.MajNegativeInt, uint64(-t.Shard-1)); err != nil {
+			return err
+		}
 	}
 
 	// t.Size (int64) (int64)
@@ -2358,7 +2331,7 @@ func (t *RecBufferResponse) UnmarshalCBOR(r io.Reader) (err error) {
 		return fmt.Errorf("cbor input should be of type array")
 	}
 
-	if extra != 2 {
+	if extra != 3 {
 		return fmt.Errorf("cbor input had wrong number of fields")
 	}
 
@@ -2369,6 +2342,33 @@ func (t *RecBufferResponse) UnmarshalCBOR(r io.Reader) (err error) {
 		if err := t.RPCHeader.UnmarshalCBOR(cr); err != nil {
 			return xerrors.Errorf("unmarshaling t.RPCHeader: %w", err)
 		}
+
+	}
+	// t.Shard (int16) (int16)
+	{
+
+		maj, extra, err := cr.ReadHeader()
+		if err != nil {
+			return err
+		}
+
+		var extraI int64
+		switch maj {
+		case cbg.MajUnsignedInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too large for int16", extra)
+			}
+			extraI = int64(extra)
+		case cbg.MajNegativeInt:
+			if extra > 32767 {
+				return fmt.Errorf("t.Shard: value %d too negative for int16", extra)
+			}
+			extraI = -1 - int64(extra)
+		default:
+			return fmt.Errorf("wrong type for int16 field: %d", maj)
+		}
+
+		t.Shard = int16(extraI)
 
 	}
 	// t.Size (int64) (int64)

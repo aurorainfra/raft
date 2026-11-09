@@ -196,8 +196,8 @@ func TestNetworkTransportCustom_SendBuffer_ErrorResponse(t *testing.T) {
 	requireSinglePooledConn(t, client, server)
 }
 
-// recBufferStore answers RecBuffer from store; a missing piece is reported as
-// Size -1 with no body.
+// recBufferStore answers RecBuffer from store, reporting the piece's shard as
+// its id plus 10; a missing piece is reported as Size -1 with no body.
 func recBufferStore(store map[PieceId][]byte) func(rpc RPC) {
 	return func(rpc RPC) {
 		req := rpc.Command.(*RecBufferRequest)
@@ -206,7 +206,8 @@ func recBufferStore(store map[PieceId][]byte) func(rpc RPC) {
 			rpc.Respond(&RecBufferResponse{Size: -1}, nil)
 			return
 		}
-		rpc.RespondWithReader(&RecBufferResponse{Size: int64(len(buf))}, bytes.NewReader(buf))
+		resp := &RecBufferResponse{Shard: int16(req.Id) + 10, Size: int64(len(buf))}
+		rpc.RespondWithReader(resp, bytes.NewReader(buf))
 	}
 }
 
@@ -219,10 +220,11 @@ func TestNetworkTransportCustom_RecBuffer(t *testing.T) {
 	server, client := newCustomPair(t, recBufferStore(store))
 
 	for _, id := range []PieceId{1, 2, 3} {
-		args := RecBufferRequest{Id: id, Shard: 3}
+		args := RecBufferRequest{Id: id}
 		var out RecBufferResponse
 		var got bytes.Buffer
 		require.NoError(t, client.RecBuffer("id", server.LocalAddr(), &args, &out, &got))
+		require.Equal(t, int16(id)+10, out.Shard)
 		require.Equal(t, int64(len(store[id])), out.Size)
 		require.Equal(t, store[id], got.Bytes())
 	}
@@ -305,13 +307,15 @@ func (s *slowReader) Read(p []byte) (int, error) {
 // body that takes longer than the base timeout but within the scaled one
 // has to succeed.
 func TestNetworkTransportCustom_RecBuffer_ScaledDeadline(t *testing.T) {
-	data := payload(4096, 0)
+	// The first chunk exceeds the server's 4KB write buffer, so the response
+	// and part of the body are flushed before the pause.
+	data := payload(64<<10, 0)
 	server, client := newCustomPair(t, func(rpc RPC) {
-		body := &slowReader{first: data[:2048], rest: data[2048:], pause: 1500 * time.Millisecond}
+		body := &slowReader{first: data[:32<<10], rest: data[32<<10:], pause: 1500 * time.Millisecond}
 		rpc.RespondWithReader(&RecBufferResponse{Size: int64(len(data))}, body)
 	})
-	// Base timeout is 1s; 4096/1024 scales it to 4s.
-	client.TimeoutScale = 1024
+	// Base timeout is 1s; 64KB/16KB scales it to 4s.
+	client.TimeoutScale = 16 << 10
 
 	var out RecBufferResponse
 	var got bytes.Buffer

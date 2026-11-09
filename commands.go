@@ -241,13 +241,13 @@ type SendBufferResponse struct {
 type RecBufferRequest struct {
 	RPCHeader
 
-	Id    PieceId
-	Shard int16
+	Id PieceId
 }
 type RecBufferResponse struct {
 	RPCHeader
 
-	Size int64
+	Shard int16
+	Size  int64
 }
 
 type TransferLeadershipRequest struct {
