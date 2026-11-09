@@ -591,11 +591,11 @@ func (n *NetworkTransport) SendBuffer(id ServerID, target ServerAddress, args *S
 	return err
 }
 
-func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data func(io.Reader) error) error {
+func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse) (io.Reader, func() error, error) {
 	// Get a conn
 	conn, err := n.getConnFromAddressProvider(id, target)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	// Set a deadline
@@ -605,13 +605,16 @@ func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *Re
 
 	// Send the RPC
 	if err = sendRPC(conn, rpcRecBuffer, args); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	// Decode the response
 	canReturn, err := decodeResponse(conn, resp)
 	if err != nil || resp.Size == -1 {
-		goto RET
+		if canReturn {
+			n.returnConn(conn)
+		}
+		return nil, nil, err
 	}
 
 	// Set a deadline
@@ -623,16 +626,25 @@ func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *Re
 		_ = conn.conn.SetDeadline(time.Now().Add(timeout))
 	}
 
-	if err := data(io.LimitReader(conn.r, resp.Size)); err != nil {
-		_ = conn.Release()
-		return err
-	}
+	reader := &io.LimitedReader{R: conn.r, N: resp.Size}
 
-RET:
-	if canReturn {
-		n.returnConn(conn)
+	closed := false
+	closer := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		if reader.N == 0 && canReturn {
+			n.returnConn(conn)
+		} else {
+			_ = conn.Release()
+		}
+		if reader.N != 0 {
+			return fmt.Errorf("bytes left %d", reader.N)
+		}
+		return nil
 	}
-	return err
+	return reader, closer, nil
 }
 
 // EncodePeer implements the Transport interface.

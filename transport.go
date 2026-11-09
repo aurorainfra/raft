@@ -82,7 +82,7 @@ type TransportCustom interface {
 
 	SendBuffer(id ServerID, target ServerAddress, args *SendBufferRequest, resp *SendBufferResponse, data io.Reader) error
 
-	RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data func(io.Reader) error) error
+	RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse) (io.Reader, func() error, error)
 
 	TransferLeadership(id ServerID, target ServerAddress, args *TransferLeadershipRequest, resp *TransferLeadershipResponse) error
 }
