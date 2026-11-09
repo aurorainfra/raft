@@ -41,6 +41,10 @@ func (r *Raft) getRPCHeader() RPCHeader {
 	}
 }
 
+func (r *Raft) GetRPCHeader() RPCHeader {
+	return r.getRPCHeader()
+}
+
 // checkRPCHeader houses logic about whether this instance of Raft can process
 // the given RPC message.
 func (r *Raft) checkRPCHeader(rpc RPC) error {
