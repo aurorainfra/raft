@@ -1,14 +1,15 @@
-// Copyright IBM Corp. 2013, 2025
+// Copyright IBM Corp. 2013, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package raft
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
-	"github.com/hashicorp/go-metrics/compat"
+	metrics "github.com/hashicorp/go-metrics"
 )
 
 // SnapshotMeta is for metadata of a snapshot.
@@ -79,16 +80,16 @@ func (r *Raft) runSnapshots() {
 			}
 
 			// Trigger a snapshot
-			if _, err := r.takeSnapshot(); err != nil {
+			if _, err := r.takeSnapshot(); err != nil && !errors.Is(err, ErrNothingNewToSnapshot) {
 				r.logger.Error("failed to take snapshot", "error", err)
 			}
 
 		case future := <-r.userSnapshotCh:
 			// User-triggered, run immediately
 			id, err := r.takeSnapshot()
-			if err != nil {
+			if err != nil && !errors.Is(err, ErrNothingNewToSnapshot) {
 				r.logger.Error("failed to take snapshot", "error", err)
-			} else {
+			} else if err == nil {
 				future.opener = func() (*SnapshotMeta, io.ReadCloser, error) {
 					return r.snapshots.Open(id)
 				}

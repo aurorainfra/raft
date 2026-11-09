@@ -11,19 +11,25 @@ import (
 // RPCResponse captures both a response and a potential error.
 type RPCResponse struct {
 	Response interface{}
+	Reader   io.Reader
 	Error    error
 }
 
 // RPC has a command, and provides a response mechanism.
 type RPC struct {
 	Command  interface{}
-	Reader   io.Reader // Set only for InstallSnapshot
+	Reader   io.Reader
 	RespChan chan<- RPCResponse
 }
 
 // Respond is used to respond with a response, error or both
 func (r *RPC) Respond(resp interface{}, err error) {
-	r.RespChan <- RPCResponse{resp, err}
+	r.RespChan <- RPCResponse{resp, nil, err}
+}
+
+// RespondWithReader is used to respond with a response, body or both
+func (r *RPC) RespondWithReader(resp interface{}, body io.Reader) {
+	r.RespChan <- RPCResponse{resp, body, nil}
 }
 
 // Transport provides an interface for network transports
@@ -64,6 +70,21 @@ type Transport interface {
 
 	// TimeoutNow is used to start a leadership transfer to the target node.
 	TimeoutNow(id ServerID, target ServerAddress, args *TimeoutNowRequest, resp *TimeoutNowResponse) error
+}
+
+// TransportCustom is implemented by transports that carry the custom
+// (non-Raft) RPCs. Connections are pooled and reused between calls, so the
+// stream must stay aligned: consumers MUST honor the contracts below.
+// Violating them leaves stray bytes on the connection that the next RPC
+// will misread.
+type TransportCustom interface {
+	ConsumerCustom() <-chan RPC
+
+	SendBuffer(id ServerID, target ServerAddress, args *SendBufferRequest, resp *SendBufferResponse, data io.Reader) error
+
+	RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data func(io.Reader) error) error
+
+	TransferLeadership(id ServerID, target ServerAddress, args *TransferLeadershipRequest, resp *TransferLeadershipResponse) error
 }
 
 // WithPreVote is an interface that a transport may provide which

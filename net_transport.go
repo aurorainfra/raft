@@ -1,4 +1,4 @@
-// Copyright IBM Corp. 2013, 2025
+// Copyright IBM Corp. 2013, 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package raft
@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/go-metrics/compat"
-	"github.com/hashicorp/go-msgpack/v2/codec"
+	"github.com/hashicorp/go-metrics"
+	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
 const (
@@ -25,6 +25,10 @@ const (
 	rpcInstallSnapshot
 	rpcTimeoutNow
 	rpcRequestPreVote
+
+	rpcSendBuffer
+	rpcRecBuffer
+	rpcTransferLeadership
 
 	// DefaultTimeoutScale is the default TimeoutScale in a NetworkTransport.
 	DefaultTimeoutScale = 256 * 1024 // 256KB
@@ -82,7 +86,8 @@ type NetworkTransport struct {
 	connPool     map[ServerAddress][]*netConn
 	connPoolLock sync.Mutex
 
-	consumeCh chan RPC
+	consumeCh       chan RPC
+	consumeCustomCh chan RPC
 
 	heartbeatFn     func(RPC)
 	heartbeatFnLock sync.Mutex
@@ -187,8 +192,7 @@ type netConn struct {
 	target ServerAddress
 	conn   net.Conn
 	w      *bufio.Writer
-	dec    *codec.Decoder
-	enc    *codec.Encoder
+	r      *bufio.Reader
 }
 
 func (n *netConn) Release() error {
@@ -226,6 +230,7 @@ func NewNetworkTransportWithConfig(
 	trans := &NetworkTransport{
 		connPool:                make(map[ServerAddress][]*netConn),
 		consumeCh:               make(chan RPC),
+		consumeCustomCh:         make(chan RPC),
 		logger:                  config.Logger,
 		maxPool:                 config.MaxPool,
 		maxInFlight:             maxInFlight,
@@ -347,6 +352,10 @@ func (n *NetworkTransport) Consumer() <-chan RPC {
 	return n.consumeCh
 }
 
+func (n *NetworkTransport) ConsumerCustom() <-chan RPC {
+	return n.consumeCustomCh
+}
+
 // LocalAddr implements the Transport interface.
 func (n *NetworkTransport) LocalAddr() ServerAddress {
 	return ServerAddress(n.stream.Addr().String())
@@ -416,13 +425,9 @@ func (n *NetworkTransport) getConn(target ServerAddress) (*netConn, error) {
 	netConn := &netConn{
 		target: target,
 		conn:   conn,
-		dec:    codec.NewDecoder(bufio.NewReader(conn), &codec.MsgpackHandle{}),
+		r:      bufio.NewReader(conn),
 		w:      bufio.NewWriterSize(conn, connSendBufferSize),
 	}
-
-	mp := &codec.MsgpackHandle{}
-	mp.TimeNotBuiltin = !n.msgpackUseNewTimeFormat
-	netConn.enc = codec.NewEncoder(netConn.w, mp)
 
 	// Done
 	return netConn, nil
@@ -477,8 +482,12 @@ func (n *NetworkTransport) RequestPreVote(id ServerID, target ServerAddress, arg
 	return n.genericRPC(id, target, rpcRequestPreVote, args, resp)
 }
 
+func (n *NetworkTransport) TransferLeadership(id ServerID, target ServerAddress, args *TransferLeadershipRequest, resp *TransferLeadershipResponse) error {
+	return n.genericRPC(id, target, rpcTransferLeadership, args, resp)
+}
+
 // genericRPC handles a simple request/response RPC.
-func (n *NetworkTransport) genericRPC(id ServerID, target ServerAddress, rpcType uint8, args interface{}, resp interface{}) error {
+func (n *NetworkTransport) genericRPC(id ServerID, target ServerAddress, rpcType uint8, args Er, resp Er) error {
 	// Get a conn
 	conn, err := n.getConnFromAddressProvider(id, target)
 	if err != nil {
@@ -538,6 +547,91 @@ func (n *NetworkTransport) InstallSnapshot(id ServerID, target ServerAddress, ar
 
 	// Decode the response, do not return conn
 	_, err = decodeResponse(conn, resp)
+	return err
+}
+
+func (n *NetworkTransport) SendBuffer(id ServerID, target ServerAddress, args *SendBufferRequest, resp *SendBufferResponse, data io.Reader) error {
+	// Get a conn
+	conn, err := n.getConnFromAddressProvider(id, target)
+	if err != nil {
+		return err
+	}
+
+	// Set a deadline
+	if n.timeout > 0 {
+		timeout := n.timeout * time.Duration(args.Size/int64(n.TimeoutScale))
+		if timeout < n.timeout {
+			timeout = n.timeout
+		}
+		_ = conn.conn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	// Send the RPC
+	if err = sendRPC(conn, rpcSendBuffer, args); err != nil {
+		return err
+	}
+
+	// Stream the buffer
+	if _, err = io.CopyN(conn.w, data, args.Size); err != nil {
+		_ = conn.Release()
+		return err
+	}
+
+	// Flush
+	if err = conn.w.Flush(); err != nil {
+		_ = conn.Release()
+		return err
+	}
+
+	// Decode the response
+	canReturn, err := decodeResponse(conn, resp)
+	if canReturn {
+		n.returnConn(conn)
+	}
+	return err
+}
+
+func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse, data func(io.Reader) error) error {
+	// Get a conn
+	conn, err := n.getConnFromAddressProvider(id, target)
+	if err != nil {
+		return err
+	}
+
+	// Set a deadline
+	if n.timeout > 0 {
+		_ = conn.conn.SetDeadline(time.Now().Add(n.timeout))
+	}
+
+	// Send the RPC
+	if err = sendRPC(conn, rpcRecBuffer, args); err != nil {
+		return err
+	}
+
+	// Decode the response
+	canReturn, err := decodeResponse(conn, resp)
+	if err != nil || resp.Size == -1 {
+		goto RET
+	}
+
+	// Set a deadline
+	if n.timeout > 0 {
+		timeout := n.timeout * time.Duration(resp.Size/int64(n.TimeoutScale))
+		if timeout < n.timeout {
+			timeout = n.timeout
+		}
+		_ = conn.conn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	if err := data(io.LimitReader(conn.r, resp.Size)); err != nil {
+		_ = conn.Release()
+		return err
+	}
+
+RET:
+	if canReturn {
+		n.returnConn(conn)
+	}
 	return err
 }
 
@@ -605,11 +699,6 @@ func (n *NetworkTransport) handleConn(connCtx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	r := bufio.NewReaderSize(conn, connReceiveBufferSize)
 	w := bufio.NewWriter(conn)
-	dec := codec.NewDecoder(r, &codec.MsgpackHandle{})
-
-	mp := &codec.MsgpackHandle{}
-	mp.TimeNotBuiltin = !n.msgpackUseNewTimeFormat
-	enc := codec.NewEncoder(w, mp)
 
 	for {
 		select {
@@ -619,7 +708,7 @@ func (n *NetworkTransport) handleConn(connCtx context.Context, conn net.Conn) {
 		default:
 		}
 
-		if err := n.handleCommand(r, dec, enc); err != nil {
+		if err := n.handleCommand(r, w); err != nil {
 			if err != io.EOF {
 				n.logger.Error("failed to decode incoming command", "error", err)
 			}
@@ -633,7 +722,7 @@ func (n *NetworkTransport) handleConn(connCtx context.Context, conn net.Conn) {
 }
 
 // handleCommand is used to decode and dispatch a single command.
-func (n *NetworkTransport) handleCommand(r *bufio.Reader, dec *codec.Decoder, enc *codec.Encoder) error {
+func (n *NetworkTransport) handleCommand(r *bufio.Reader, w *bufio.Writer) error {
 	getTypeStart := time.Now()
 
 	// Get the rpc type
@@ -659,7 +748,7 @@ func (n *NetworkTransport) handleCommand(r *bufio.Reader, dec *codec.Decoder, en
 	switch rpcType {
 	case rpcAppendEntries:
 		var req AppendEntriesRequest
-		if err := dec.Decode(&req); err != nil {
+		if err := req.UnmarshalCBOR(r); err != nil {
 			return err
 		}
 		rpc.Command = &req
@@ -683,21 +772,21 @@ func (n *NetworkTransport) handleCommand(r *bufio.Reader, dec *codec.Decoder, en
 		}
 	case rpcRequestVote:
 		var req RequestVoteRequest
-		if err := dec.Decode(&req); err != nil {
+		if err := req.UnmarshalCBOR(r); err != nil {
 			return err
 		}
 		rpc.Command = &req
 		labels = []metrics.Label{{Name: "rpcType", Value: "RequestVote"}}
 	case rpcRequestPreVote:
 		var req RequestPreVoteRequest
-		if err := dec.Decode(&req); err != nil {
+		if err := req.UnmarshalCBOR(r); err != nil {
 			return err
 		}
 		rpc.Command = &req
 		labels = []metrics.Label{{Name: "rpcType", Value: "RequestPreVote"}}
 	case rpcInstallSnapshot:
 		var req InstallSnapshotRequest
-		if err := dec.Decode(&req); err != nil {
+		if err := req.UnmarshalCBOR(r); err != nil {
 			return err
 		}
 		rpc.Command = &req
@@ -705,16 +794,43 @@ func (n *NetworkTransport) handleCommand(r *bufio.Reader, dec *codec.Decoder, en
 		labels = []metrics.Label{{Name: "rpcType", Value: "InstallSnapshot"}}
 	case rpcTimeoutNow:
 		var req TimeoutNowRequest
-		if err := dec.Decode(&req); err != nil {
+		if err := req.UnmarshalCBOR(r); err != nil {
 			return err
 		}
 		rpc.Command = &req
 		labels = []metrics.Label{{Name: "rpcType", Value: "TimeoutNow"}}
+	case rpcTransferLeadership:
+		var req TransferLeadershipRequest
+		if err := req.UnmarshalCBOR(r); err != nil {
+			return err
+		}
+		rpc.Command = &req
+		labels = []metrics.Label{{Name: "rpcType", Value: "TransferLeadership"}}
+	case rpcSendBuffer:
+		var req SendBufferRequest
+		if err := req.UnmarshalCBOR(r); err != nil {
+			return err
+		}
+		rpc.Command = &req
+		rpc.Reader = io.LimitReader(r, req.Size)
+		labels = []metrics.Label{{Name: "rpcType", Value: "SendBuffer"}}
+	case rpcRecBuffer:
+		var req RecBufferRequest
+		if err := req.UnmarshalCBOR(r); err != nil {
+			return err
+		}
+		rpc.Command = &req
+		labels = []metrics.Label{{Name: "rpcType", Value: "RecBuffer"}}
 	default:
 		return fmt.Errorf("unknown rpc type %d", rpcType)
 	}
 
 	metrics.MeasureSinceWithLabels([]string{"raft", "net", "rpcDecode"}, decodeStart, labels)
+
+	consumeCh := n.consumeCh
+	if rpcType == rpcTransferLeadership || rpcType == rpcSendBuffer || rpcType == rpcRecBuffer {
+		consumeCh = n.consumeCustomCh
+	}
 
 	processStart := time.Now()
 
@@ -731,7 +847,7 @@ func (n *NetworkTransport) handleCommand(r *bufio.Reader, dec *codec.Decoder, en
 
 	// Dispatch the RPC
 	select {
-	case n.consumeCh <- rpc:
+	case consumeCh <- rpc:
 	case <-n.shutdownCh:
 		return ErrTransportShutdown
 	}
@@ -745,17 +861,36 @@ RESP:
 	case resp := <-respCh:
 		defer metrics.MeasureSinceWithLabels([]string{"raft", "net", "rpcRespond"}, respWaitStart, labels)
 		// Send the error first
-		respErr := ""
+		respErr := String{Value: ""}
 		if resp.Error != nil {
-			respErr = resp.Error.Error()
+			respErr.Value = resp.Error.Error()
 		}
-		if err := enc.Encode(respErr); err != nil {
+		if err := respErr.MarshalCBOR(w); err != nil {
 			return err
 		}
 
 		// Send the response
-		if err := enc.Encode(resp.Response); err != nil {
-			return err
+		if resp.Response != nil {
+			response, ok := resp.Response.(Er)
+			if !ok {
+				return fmt.Errorf("response does not implement Er interface: %T", resp.Response)
+			}
+			if err := response.MarshalCBOR(w); err != nil {
+				return err
+			}
+			if resp.Reader != nil {
+				r, ok := response.(*RecBufferResponse)
+				if !ok {
+					return fmt.Errorf("response with reader set does not implement RecBufferResponse interface: %T", resp.Response)
+				}
+				if _, err := io.CopyN(w, resp.Reader, r.Size); err != nil {
+					return err
+				}
+			}
+		} else {
+			if _, err := w.Write(cbg.CborNull); err != nil {
+				return err
+			}
 		}
 	case <-n.shutdownCh:
 		return ErrTransportShutdown
@@ -765,29 +900,43 @@ RESP:
 
 // decodeResponse is used to decode an RPC response and reports whether
 // the connection can be reused.
-func decodeResponse(conn *netConn, resp interface{}) (bool, error) {
+func decodeResponse(conn *netConn, resp Er) (bool, error) {
 	// Decode the error if any
-	var rpcError string
-	if err := conn.dec.Decode(&rpcError); err != nil {
+	var rpcError String
+	if err := rpcError.UnmarshalCBOR(conn.r); err != nil {
 		_ = conn.Release()
 		return false, err
 	}
 
 	// Decode the response
-	if err := conn.dec.Decode(resp); err != nil {
+	// Peek at the next byte to check for CBOR null (0xf6)
+	// This handles cases where the response was nil on the server side
+	nextByte, err := conn.r.Peek(1)
+	if err != nil {
 		_ = conn.Release()
 		return false, err
 	}
 
+	if len(nextByte) > 0 && nextByte[0] == 0xf6 {
+		// It's a CBOR null, just consume it and leave resp as zero value
+		_, _ = conn.r.ReadByte()
+	} else {
+		// Normal response, unmarshal it
+		if err := resp.UnmarshalCBOR(conn.r); err != nil {
+			_ = conn.Release()
+			return false, err
+		}
+	}
+
 	// Format an error if any
-	if rpcError != "" {
-		return true, errors.New(rpcError)
+	if rpcError.Value != "" {
+		return true, errors.New(rpcError.Value)
 	}
 	return true, nil
 }
 
 // sendRPC is used to encode and send the RPC.
-func sendRPC(conn *netConn, rpcType uint8, args interface{}) error {
+func sendRPC(conn *netConn, rpcType uint8, args Er) error {
 	// Write the request type
 	if err := conn.w.WriteByte(rpcType); err != nil {
 		_ = conn.Release()
@@ -795,7 +944,7 @@ func sendRPC(conn *netConn, rpcType uint8, args interface{}) error {
 	}
 
 	// Send the request
-	if err := conn.enc.Encode(args); err != nil {
+	if err := args.MarshalCBOR(conn.w); err != nil {
 		_ = conn.Release()
 		return err
 	}

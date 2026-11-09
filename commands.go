@@ -221,3 +221,43 @@ type TimeoutNowResponse struct {
 func (r *TimeoutNowResponse) GetRPCHeader() RPCHeader {
 	return r.RPCHeader
 }
+
+type PieceId uint64
+
+type SendBufferRequest struct {
+	RPCHeader
+
+	Id    PieceId
+	Shard int16
+	Size  int64
+}
+
+type SendBufferResponse struct {
+	RPCHeader
+
+	Ok bool
+}
+
+type RecBufferRequest struct {
+	RPCHeader
+
+	Id PieceId
+}
+type RecBufferResponse struct {
+	RPCHeader
+
+	Shard int16
+	Size  int64
+}
+
+type TransferLeadershipRequest struct {
+	RPCHeader
+
+	Id      ServerID
+	Address ServerAddress
+}
+type TransferLeadershipResponse struct {
+	RPCHeader
+
+	Ok bool
+}
