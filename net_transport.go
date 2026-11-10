@@ -591,7 +591,7 @@ func (n *NetworkTransport) SendBuffer(id ServerID, target ServerAddress, args *S
 	return err
 }
 
-func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse) (io.Reader, func() error, error) {
+func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *RecBufferRequest, resp *RecBufferResponse) (io.Reader, func(), error) {
 	// Get a conn
 	conn, err := n.getConnFromAddressProvider(id, target)
 	if err != nil {
@@ -629,20 +629,18 @@ func (n *NetworkTransport) RecBuffer(id ServerID, target ServerAddress, args *Re
 	reader := &io.LimitedReader{R: conn.r, N: resp.Size}
 
 	closed := false
-	closer := func() error {
+	closer := func() {
 		if closed {
-			return nil
+			return
 		}
 		closed = true
+		_, _ = io.Copy(io.Discard, reader)
 		if reader.N == 0 && canReturn {
 			n.returnConn(conn)
 		} else {
 			_ = conn.Release()
 		}
-		if reader.N != 0 {
-			return fmt.Errorf("bytes left %d", reader.N)
-		}
-		return nil
+		return
 	}
 	return reader, closer, nil
 }
