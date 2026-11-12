@@ -234,14 +234,13 @@ type SendBufferRequest struct {
 
 type SendBufferResponse struct {
 	RPCHeader
-
-	Ok bool
 }
 
 type RecBufferRequest struct {
 	RPCHeader
 
-	Id PieceId
+	Id     PieceId
+	Offset int64
 }
 type RecBufferResponse struct {
 	RPCHeader
@@ -258,6 +257,4 @@ type TransferLeadershipRequest struct {
 }
 type TransferLeadershipResponse struct {
 	RPCHeader
-
-	Ok bool
 }
