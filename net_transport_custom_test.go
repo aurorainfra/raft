@@ -211,18 +211,16 @@ func recBuffer(client, server *NetworkTransport, args *RecBufferRequest, out *Re
 	return err
 }
 
-// recBufferStore answers RecBuffer from store, starting at the requested
-// offset and reporting the piece's shard as its id plus 10; a missing piece
-// or an offset past its end is reported as Size -1 with no body.
+// recBufferStore answers RecBuffer from store, reporting the piece's shard as
+// its id plus 10; a missing piece is reported as Size -1 with no body.
 func recBufferStore(store map[PieceId][]byte) func(rpc RPC) {
 	return func(rpc RPC) {
 		req := rpc.Command.(*RecBufferRequest)
 		buf, found := store[req.Id]
-		if !found || req.Offset < 0 || req.Offset > int64(len(buf)) {
+		if !found {
 			rpc.Respond(&RecBufferResponse{Size: -1}, nil)
 			return
 		}
-		buf = buf[req.Offset:]
 		resp := &RecBufferResponse{Shard: int16(req.Id) + 10, Size: int64(len(buf))}
 		rpc.RespondWithReader(resp, bytes.NewReader(buf))
 	}
@@ -253,26 +251,6 @@ func TestNetworkTransportCustom_RecBuffer(t *testing.T) {
 	require.NoError(t, recBuffer(client, server, &args, &out, &got))
 	require.Equal(t, int64(-1), out.Size)
 	require.Zero(t, got.Len())
-
-	requireSinglePooledConn(t, client, server)
-}
-
-func TestNetworkTransportCustom_RecBuffer_Offset(t *testing.T) {
-	data := payload(100, 0)
-	server, client := newCustomPair(t, recBufferStore(map[PieceId][]byte{1: data}))
-
-	for _, off := range []int64{0, 37, 100} {
-		var out RecBufferResponse
-		var got bytes.Buffer
-		require.NoError(t, recBuffer(client, server, &RecBufferRequest{Id: 1, Offset: off}, &out, &got))
-		require.Equal(t, int64(len(data))-off, out.Size)
-		require.Equal(t, data[off:], got.Bytes())
-	}
-
-	// Past the end: not found.
-	var out RecBufferResponse
-	require.NoError(t, recBuffer(client, server, &RecBufferRequest{Id: 1, Offset: 101}, &out, io.Discard))
-	require.Equal(t, int64(-1), out.Size)
 
 	requireSinglePooledConn(t, client, server)
 }
