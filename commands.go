@@ -239,8 +239,7 @@ type SendBufferResponse struct {
 type RecBufferRequest struct {
 	RPCHeader
 
-	Id     PieceId
-	Offset int64
+	Id PieceId
 }
 type RecBufferResponse struct {
 	RPCHeader
