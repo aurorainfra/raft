@@ -74,7 +74,7 @@ func TestNetworkTransportCustom_TransferLeadership(t *testing.T) {
 		Id:        "node-2",
 		Address:   "10.0.0.2:8300",
 	}
-	want := TransferLeadershipResponse{Ok: true}
+	want := TransferLeadershipResponse{RPCHeader: RPCHeader{Addr: []byte("follower")}}
 
 	server, client := newCustomPair(t, func(rpc RPC) {
 		req, ok := rpc.Command.(*TransferLeadershipRequest)
@@ -106,7 +106,7 @@ type sentBuffer struct {
 }
 
 // sendBufferRecorder answers SendBuffer by reading the whole body and
-// reporting what arrived on the returned channel.
+// reporting what arrived on the returned channel. A short body is an error.
 func sendBufferRecorder() (func(rpc RPC), chan sentBuffer) {
 	received := make(chan sentBuffer, 8)
 	return func(rpc RPC) {
@@ -117,7 +117,11 @@ func sendBufferRecorder() (func(rpc RPC), chan sentBuffer) {
 			return
 		}
 		received <- sentBuffer{*req, buf}
-		rpc.Respond(&SendBufferResponse{Ok: int64(len(buf)) == req.Size}, nil)
+		if int64(len(buf)) != req.Size {
+			rpc.Respond(nil, io.ErrUnexpectedEOF)
+			return
+		}
+		rpc.Respond(&SendBufferResponse{}, nil)
 	}, received
 }
 
@@ -130,7 +134,6 @@ func TestNetworkTransportCustom_SendBuffer(t *testing.T) {
 		args := SendBufferRequest{Id: PieceId(i + 1), Shard: 3, Size: int64(size)}
 		var out SendBufferResponse
 		require.NoError(t, client.SendBuffer("id", server.LocalAddr(), &args, &out, bytes.NewReader(data)))
-		require.True(t, out.Ok)
 
 		got := <-received
 		require.Equal(t, args.Id, got.req.Id)
@@ -151,7 +154,6 @@ func TestNetworkTransportCustom_SendBuffer_LongData(t *testing.T) {
 		var out SendBufferResponse
 		args := SendBufferRequest{Size: 40}
 		require.NoError(t, client.SendBuffer("id", server.LocalAddr(), &args, &out, bytes.NewReader(data)))
-		require.True(t, out.Ok)
 		require.Equal(t, data[:40], (<-received).data)
 	}
 	requireSinglePooledConn(t, client, server)
@@ -197,29 +199,30 @@ func TestNetworkTransportCustom_SendBuffer_ErrorResponse(t *testing.T) {
 }
 
 // recBuffer calls RecBuffer and copies the body into w, then releases the
-// connection, reporting done's error if the copy itself succeeded.
+// connection. The body ends in a plain EOF when truncated, so the copy uses
+// io.CopyN against Size to detect it.
 func recBuffer(client, server *NetworkTransport, args *RecBufferRequest, out *RecBufferResponse, w io.Writer) error {
 	body, done, err := client.RecBuffer("id", server.LocalAddr(), args, out)
 	if err != nil || out.Size == -1 {
 		return err
 	}
-	_, err = io.Copy(w, body)
-	if derr := done(); err == nil {
-		err = derr
-	}
+	defer done()
+	_, err = io.CopyN(w, body, out.Size)
 	return err
 }
 
-// recBufferStore answers RecBuffer from store, reporting the piece's shard as
-// its id plus 10; a missing piece is reported as Size -1 with no body.
+// recBufferStore answers RecBuffer from store, starting at the requested
+// offset and reporting the piece's shard as its id plus 10; a missing piece
+// or an offset past its end is reported as Size -1 with no body.
 func recBufferStore(store map[PieceId][]byte) func(rpc RPC) {
 	return func(rpc RPC) {
 		req := rpc.Command.(*RecBufferRequest)
 		buf, found := store[req.Id]
-		if !found {
+		if !found || req.Offset < 0 || req.Offset > int64(len(buf)) {
 			rpc.Respond(&RecBufferResponse{Size: -1}, nil)
 			return
 		}
+		buf = buf[req.Offset:]
 		resp := &RecBufferResponse{Shard: int16(req.Id) + 10, Size: int64(len(buf))}
 		rpc.RespondWithReader(resp, bytes.NewReader(buf))
 	}
@@ -250,6 +253,26 @@ func TestNetworkTransportCustom_RecBuffer(t *testing.T) {
 	require.NoError(t, recBuffer(client, server, &args, &out, &got))
 	require.Equal(t, int64(-1), out.Size)
 	require.Zero(t, got.Len())
+
+	requireSinglePooledConn(t, client, server)
+}
+
+func TestNetworkTransportCustom_RecBuffer_Offset(t *testing.T) {
+	data := payload(100, 0)
+	server, client := newCustomPair(t, recBufferStore(map[PieceId][]byte{1: data}))
+
+	for _, off := range []int64{0, 37, 100} {
+		var out RecBufferResponse
+		var got bytes.Buffer
+		require.NoError(t, recBuffer(client, server, &RecBufferRequest{Id: 1, Offset: off}, &out, &got))
+		require.Equal(t, int64(len(data))-off, out.Size)
+		require.Equal(t, data[off:], got.Bytes())
+	}
+
+	// Past the end: not found.
+	var out RecBufferResponse
+	require.NoError(t, recBuffer(client, server, &RecBufferRequest{Id: 1, Offset: 101}, &out, io.Discard))
+	require.Equal(t, int64(-1), out.Size)
 
 	requireSinglePooledConn(t, client, server)
 }
@@ -338,8 +361,7 @@ func TestNetworkTransportCustom_RecBuffer_ScaledDeadline(t *testing.T) {
 }
 
 // The server drops the connection after flushing part of a large body. The
-// body reader ends with a plain EOF, so io.Copy succeeds; done must report
-// the truncation.
+// body ends with a plain EOF; io.CopyN against Size catches it.
 func TestNetworkTransportCustom_RecBuffer_TruncatedBody(t *testing.T) {
 	server, client := newCustomPair(t, func(rpc RPC) {
 		// 32KB exceeds the server's 4KB write buffer, so it reaches the wire.
@@ -349,12 +371,13 @@ func TestNetworkTransportCustom_RecBuffer_TruncatedBody(t *testing.T) {
 	var out RecBufferResponse
 	var got bytes.Buffer
 	err := recBuffer(client, server, &RecBufferRequest{}, &out, &got)
-	require.Error(t, err, "truncated body accepted: got %d of %d bytes", got.Len(), out.Size)
+	require.ErrorIs(t, err, io.EOF)
+	require.Less(t, got.Len(), int(out.Size))
 	require.Equal(t, 0, pooledConns(client, server))
 }
 
-// Calling done before reading the whole body must not leave the rest on a
-// pooled connection; the next call has to work.
+// Calling done before reading the whole body drains the rest, so the
+// connection is pooled aligned and the next call reuses it.
 func TestNetworkTransportCustom_RecBuffer_UnderRead(t *testing.T) {
 	data := payload(100, 0)
 	server, client := newCustomPair(t, func(rpc RPC) {
@@ -368,8 +391,8 @@ func TestNetworkTransportCustom_RecBuffer_UnderRead(t *testing.T) {
 	_, err = io.ReadFull(body, head)
 	require.NoError(t, err)
 	require.Equal(t, data[:10], head)
-	require.Error(t, done(), "done must report the unread bytes")
-	require.Equal(t, 0, pooledConns(client, server))
+	done()
+	requireSinglePooledConn(t, client, server)
 
 	var got bytes.Buffer
 	require.NoError(t, recBuffer(client, server, &RecBufferRequest{}, &out, &got))
@@ -390,22 +413,8 @@ func TestNetworkTransportCustom_RecBuffer_DoneTwice(t *testing.T) {
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, body)
 	require.NoError(t, err)
-	require.NoError(t, done())
-	require.NoError(t, done())
-	requireSinglePooledConn(t, client, server)
-}
-
-// Not-found and error responses carry no body, but callers should still be
-// able to defer done right after checking err.
-func TestNetworkTransportCustom_RecBuffer_DoneAlwaysCallable(t *testing.T) {
-	server, client := newCustomPair(t, recBufferStore(map[PieceId][]byte{}))
-
-	var out RecBufferResponse
-	_, done, err := client.RecBuffer("id", server.LocalAddr(), &RecBufferRequest{Id: 99}, &out)
-	require.NoError(t, err)
-	require.Equal(t, int64(-1), out.Size)
-	require.NotNil(t, done, "done is nil for a not-found piece")
-	require.NoError(t, done())
+	done()
+	done()
 	requireSinglePooledConn(t, client, server)
 }
 
@@ -431,11 +440,11 @@ func TestNetworkTransportCustom_Interleaved(t *testing.T) {
 		switch rpc.Command.(type) {
 		case *SendBufferRequest:
 			_, _ = io.Copy(io.Discard, rpc.Reader)
-			rpc.Respond(&SendBufferResponse{Ok: true}, nil)
+			rpc.Respond(&SendBufferResponse{}, nil)
 		case *RecBufferRequest:
 			recv(rpc)
 		case *TransferLeadershipRequest:
-			rpc.Respond(&TransferLeadershipResponse{Ok: true}, nil)
+			rpc.Respond(&TransferLeadershipResponse{}, nil)
 		}
 	})
 	addr := server.LocalAddr()
@@ -443,7 +452,6 @@ func TestNetworkTransportCustom_Interleaved(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		var sOut SendBufferResponse
 		require.NoError(t, client.SendBuffer("id", addr, &SendBufferRequest{Size: 5000}, &sOut, bytes.NewReader(payload(5000, 0))))
-		require.True(t, sOut.Ok)
 
 		var rOut RecBufferResponse
 		var got bytes.Buffer
@@ -452,7 +460,6 @@ func TestNetworkTransportCustom_Interleaved(t *testing.T) {
 
 		var tOut TransferLeadershipResponse
 		require.NoError(t, client.TransferLeadership("id", addr, &TransferLeadershipRequest{}, &tOut))
-		require.True(t, tOut.Ok)
 	}
 	requireSinglePooledConn(t, client, server)
 }
